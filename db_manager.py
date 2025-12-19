@@ -11,6 +11,7 @@ class DeepStreamDB:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # 기본 분석 데이터 테이블
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS analytics_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +31,21 @@ class DeepStreamDB:
             )
         ''')
         
+        # 알림 테이블
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                line_crossing TEXT,
+                object_type TEXT,
+                message TEXT,
+                acknowledged INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # 인덱스 생성
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_timestamp 
@@ -39,6 +55,16 @@ class DeepStreamDB:
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_created_at 
             ON analytics_data(created_at)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alert_timestamp 
+            ON alerts(timestamp)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_alert_acknowledged 
+            ON alerts(acknowledged)
         ''')
         
         conn.commit()
@@ -95,13 +121,122 @@ class DeepStreamDB:
             return record_id
             
         except Exception as e:
-            print(f"  데이터 삽입 오류: {e}")
+            print(f" 데이터 삽입 오류: {e}")
+            return None
+        finally:
+            conn.close()
+
+    # add 알림
+    def insert_alert(self, timestamp, alert_type, severity, line_crossing=None, 
+                    object_type=None, message=None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO alerts (
+                    timestamp,
+                    alert_type,
+                    severity,
+                    line_crossing,
+                    object_type,
+                    message
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            ''', (timestamp, alert_type, severity, line_crossing, object_type, message))
+            
+            alert_id = cursor.lastrowid
+            conn.commit()
+            return alert_id
+            
+        except Exception as e:
+            print(f" 알림 삽입 오류: {e}")
             return None
         finally:
             conn.close()
     
+    # 알림 조회
+    def get_recent_alerts(self, limit=10, unacknowledged_only=False):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if unacknowledged_only:
+            query = '''
+                SELECT * FROM alerts
+                WHERE acknowledged = 0
+                ORDER BY id DESC
+                LIMIT ?
+            '''
+        else:
+            query = '''
+                SELECT * FROM alerts
+                ORDER BY id DESC
+                LIMIT ?
+            '''
+        
+        cursor.execute(query, (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    
+    #알림 확인 처리
+    def acknowledge_alert(self, alert_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                UPDATE alerts
+                SET acknowledged = 1
+                WHERE id = ?
+            ''', (alert_id,))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f" 알림 확인 처리 오류: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    # 심각도별 알림 개수 조회
+    def get_alert_count_by_severity(self, hours=24):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT severity, COUNT(*) as count
+            FROM alerts
+            WHERE timestamp >= datetime('now', '-' || ? || ' hours')
+            GROUP BY severity
+        ''', (hours,))
+        
+        result = cursor.fetchall()
+        conn.close()
+        
+        return {row[0]: row[1] for row in result}
+    
+    # 오래된 알림 삭제
+    def clear_old_alerts(self, days=7):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                DELETE FROM alerts
+                WHERE timestamp < datetime('now', '-' || ? || ' days')
+            ''', (days,))
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception as e:
+            print(f" 알림 삭제 오류: {e}")
+            return 0
+        finally:
+            conn.close()
+
     def get_total_count(self):
-        # 전체 레코드 수 췍
+        # 전체 데이터 수 췍
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM analytics_data")
