@@ -43,8 +43,6 @@ void count_manager_init(void)
     frame_count = 0;
 
     pthread_mutex_unlock(&cm_lock);
-    
-    printf("[COUNT] Count Manager Initialized\n");
 }
 
 // 내부: 이미 본 객체인지 검사
@@ -83,12 +81,6 @@ void count_manager_process_obj(int class_id, uint64_t object_id)
     {
         total_count[class_id]++;
         mark_seen_locked(class_id, object_id);
-        
-        //새 객체 발견 시 터미널 출력(확인용임)
-        printf("[COUNT] New %s detected (ID: %llu, Total: %llu)\n",
-               class_names[class_id],
-               (unsigned long long)object_id,
-               (unsigned long long)total_count[class_id]);
     }
 
     pthread_mutex_unlock(&cm_lock);
@@ -113,10 +105,6 @@ void count_manager_get_json(char *out, size_t out_size)
              (unsigned long long)cur_count[2], (unsigned long long)total_count[2],
              (unsigned long long)cur_count[3], (unsigned long long)total_count[3]);
 
-    // 터미널에 출력
-    printf("[COUNT] Frame Stats: %s\n", out);
-
-    // cur 카운트 리셋
     for (int c = 0; c < NUM_CLASSES; c++)
         cur_count[c] = 0;
 

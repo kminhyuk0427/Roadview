@@ -29,6 +29,7 @@ SRCS:= $(wildcard *.c) $(wildcard *.cpp)
 SRCS+= $(wildcard ../../apps-common/src/*.c)
 SRCS+= $(wildcard ../../apps-common/src/deepstream-yaml/*.cpp)
 
+SRCS+= mqtt/mqtt_client.c
 SRCS+= count/count_manager.c
 
 INCS:= $(wildcard *.h)
@@ -44,6 +45,7 @@ CFLAGS+= -I./ -I../../apps-common/includes \
 #-I /usr/local/cuda-$(CUDA_VER)/include
 
 CFLAGS+= -Iinclude
+CFLAGS+= -I./mqtt
 
 #LIBS:= -L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart
 LIBS:= -L$(CUDA_HOME)/lib64/ -lcudart
@@ -56,7 +58,7 @@ CFLAGS+= $(shell pkg-config --cflags $(PKGS))
 
 LIBS+= $(shell pkg-config --libs $(PKGS))
 
-LIBS+= -lrt
+LIBS+= -lmosquitto -lrt
 
 all: $(APP)
 

@@ -19,6 +19,7 @@
 #include <termios.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include "mqtt/mqtt_client.h"
 #include "count/count_manager.h"
 
 #define MAX_INSTANCES 128
@@ -42,6 +43,7 @@ static guint num_input_uris;
 static GMutex fps_lock;
 static gdouble fps[MAX_SOURCE_BINS];
 static gdouble fps_avg[MAX_SOURCE_BINS];
+static gboolean paused = FALSE;
 
 static Display *display = NULL;
 static Window windows[MAX_INSTANCES] = {0};
@@ -75,6 +77,47 @@ GOptionEntry entries[] = {
  * are being maintained. It should be modified according to network classes
  * or can be removed altogether if not required.
  */
+
+// 일시정지, 재실행
+int getch(void)
+{
+  struct termios oldt, newt;
+  int ch;
+  tcgetattr(STDIN_FILENO, &oldt);
+  newt = oldt;
+  newt.c_lflag &= ~(ICANON | ECHO);
+  tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+  ch = getchar();
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+  return ch;
+}
+
+void *keyboard_thread(void *arg)
+{
+  GstElement *pipeline = (GstElement *)arg;
+
+  while (1)
+  {
+    int c = getch();
+    if (c == ' ')
+    {
+      if (!paused)
+      {
+        gst_element_set_state(pipeline, GST_STATE_PAUSED);
+        paused = TRUE;
+        g_print("=== PIPELINE PAUSED ===\n");
+      }
+      else
+      {
+        gst_element_set_state(pipeline, GST_STATE_PLAYING);
+        paused = FALSE;
+        g_print("=== PIPELINE RESUMED ===\n");
+      }
+    }
+  }
+  return NULL;
+}
+
 static void
 all_bbox_generated(AppCtx *appCtx, GstBuffer *buf,
                    NvDsBatchMeta *batch_meta, guint index)
@@ -668,6 +711,7 @@ int main(int argc, char *argv[])
 
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, NULL);
 
+  mqtt_client_init("localhost", 1883);
   count_manager_init();
 
   int current_device = -1;
@@ -908,6 +952,10 @@ int main(int argc, char *argv[])
 
   print_runtime_commands();
 
+  // 일시중지, 재실행
+  pthread_t kb_tid;
+  pthread_create(&kb_tid, NULL, keyboard_thread, (void *)appCtx[0]->pipeline.pipeline);
+
   changemode(1);
 
   g_timeout_add(40, event_thread_func, NULL);
@@ -960,6 +1008,8 @@ done:
   }
 
   gst_deinit();
+  // 종료(연결끊기)
+  mqtt_client_deinit();
 
   return return_value;
 }

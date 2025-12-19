@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "count/count_manager.h"
+#include "mqtt/mqtt_client.h"
 
 #include "deepstream_app.h"
 
@@ -2057,6 +2058,7 @@ create_pipeline(AppCtx *appCtx,
   // enabled
 
   count_manager_init();
+  mqtt_client_init("localhost", 1883);
 
   if (config->dsexample_config.enable)
   {
@@ -2340,30 +2342,33 @@ resume_pipeline(AppCtx *appCtx)
 
 GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 {
-    //버퍼 추출
-    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
-    if (!buf)
-        return GST_PAD_PROBE_OK;
+  //버퍼 추출
+  GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (!buf)
+      return GST_PAD_PROBE_OK;
   // 버퍼에 메타데이터 가져옴
-    NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buf);
-    if (!batch_meta)
-        return GST_PAD_PROBE_OK;
-    // 각 프레임마다 반복(카메라 여러개 쓸때ㅇ)
-    for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next)
+  NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+  if (!batch_meta)
+      return GST_PAD_PROBE_OK;
+  // 각 프레임마다 반복(카메라 여러개 쓸때ㅇ)
+  for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next)
+  {
+      NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
+
+    // 프레임 안에 객체별로 순화함
+    for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
     {
-        NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
-
-        // 프레임 안에 객체별로 순화함
-        for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
-        {
-            NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
-            count_manager_process_obj(obj_meta->class_id, obj_meta->object_id);
-        }
-
-        // json생성 후 출력 + cur초기화
-        char stats[512];
-        count_manager_get_json(stats, sizeof(stats));
+      NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
+      count_manager_process_obj(obj_meta->class_id, obj_meta->object_id);
     }
 
-    return GST_PAD_PROBE_OK;
+    // json생성 후 출력 + cur초기화
+    char json_payload[512];
+    count_manager_get_json(json_payload, sizeof(json_payload));
+ 
+    // mqtt 발행  
+    mqtt_client_publish("deepstream/count", json_payload);
+  }
+
+  return GST_PAD_PROBE_OK;
 }
