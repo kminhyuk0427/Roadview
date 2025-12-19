@@ -15,11 +15,21 @@
 #include <math.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string>
+#include <iostream>
+#include <vector>
+#include <unordered_map>  
 
+extern "C" {
 #include "count/count_manager.h"
 #include "mqtt/mqtt_client.h"
+}
 
 #include "deepstream_app.h"
+#include "gstnvdsmeta.h"
+#include "nvds_analytics_meta.h"
+#include "includes/analytics.h"
+#include "nvdsmeta_schema.h"
 
 #define MAX_DISPLAY_LEN 64
 static guint demux_batch_num = 0;
@@ -1166,6 +1176,9 @@ analytics_done_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer u_data)
     return GST_PAD_PROBE_OK;
   }
 
+  // ROI
+  process_analytics_metadata(batch_meta);
+
   /*
    * Output KITTI labels with tracking ID if configured to do so.
    */
@@ -1539,6 +1552,16 @@ create_common_elements(NvDsConfig *config, NvDsPipeline *pipeline,
                            *sink_elem);
     }
     *sink_elem = pipeline->common_elements.dsanalytics_bin.bin;
+
+    // nvdsanalytics의 src pad에 probe 연결
+    g_print("[SETUP] Adding analytics probe for MQTT publishing on nvdsanalytics src pad\n");
+    NVGSTDS_ELEM_ADD_PROBE(
+        pipeline->common_elements.primary_bbox_buffer_probe_id,
+        pipeline->common_elements.dsanalytics_bin.bin,
+        "src",
+        tracker_buf_prob,  // 이름은 tracker_buf_prob이지만 실제로는 analytics 처리
+        GST_PAD_PROBE_TYPE_BUFFER,
+        pipeline->common_elements.appCtx);
   }
 
   if (config->tracker_config.enable)
@@ -1562,15 +1585,6 @@ create_common_elements(NvDsConfig *config, NvDsPipeline *pipeline,
     }
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
-
-  // 트래커 뒤에 연결
-  NVGSTDS_ELEM_ADD_PROBE(
-      pipeline->common_elements.all_bbox_buffer_probe_id,
-      pipeline->common_elements.tracker_bin.bin,
-      "src",
-      tracker_buf_prob,
-      GST_PAD_PROBE_TYPE_BUFFER,
-      pipeline->common_elements.appCtx);
 
   if (config->primary_gie_config.enable)
   {
@@ -1624,54 +1638,6 @@ create_common_elements(NvDsConfig *config, NvDsPipeline *pipeline,
     }
 
     *sink_elem = pipeline->common_elements.preprocess_bin.bin;
-  }
-
-  if (*src_elem)
-  {
-    NVGSTDS_ELEM_ADD_PROBE(pipeline->common_elements.primary_bbox_buffer_probe_id, *src_elem, "src",
-                           analytics_done_buf_prob, GST_PAD_PROBE_TYPE_BUFFER,
-                           &pipeline->common_elements);
-
-    /* Add common message converter */
-    if (config->msg_conv_config.enable)
-    {
-      NvDsSinkMsgConvBrokerConfig *convConfig = &config->msg_conv_config;
-      pipeline->common_elements.msg_conv =
-          gst_element_factory_make(NVDS_ELEM_MSG_CONV, "common_msg_conv");
-      if (!pipeline->common_elements.msg_conv)
-      {
-        NVGSTDS_ERR_MSG_V("Failed to create element 'common_msg_conv'");
-        goto done;
-      }
-
-      g_object_set(G_OBJECT(pipeline->common_elements.msg_conv),
-                   "config", convConfig->config_file_path,
-                   "msg2p-lib",
-                   (convConfig->conv_msg2p_lib ? convConfig->conv_msg2p_lib : "null"),
-                   "payload-type", convConfig->conv_payload_type, "comp-id",
-                   convConfig->conv_comp_id, "debug-payload-dir",
-                   convConfig->debug_payload_dir, "multiple-payloads",
-                   convConfig->multiple_payloads, "msg2p-newapi", convConfig->conv_msg2p_new_api,
-                   "frame-interval", convConfig->conv_frame_interval, NULL);
-
-      gst_bin_add(GST_BIN(pipeline->pipeline),
-                  pipeline->common_elements.msg_conv);
-
-      NVGSTDS_LINK_ELEMENT(*src_elem, pipeline->common_elements.msg_conv);
-      *src_elem = pipeline->common_elements.msg_conv;
-    }
-    pipeline->common_elements.tee =
-        gst_element_factory_make(NVDS_ELEM_TEE, "common_analytics_tee");
-    if (!pipeline->common_elements.tee)
-    {
-      NVGSTDS_ERR_MSG_V("Failed to create element 'common_analytics_tee'");
-      goto done;
-    }
-
-    gst_bin_add(GST_BIN(pipeline->pipeline), pipeline->common_elements.tee);
-
-    NVGSTDS_LINK_ELEMENT(*src_elem, pipeline->common_elements.tee);
-    *src_elem = pipeline->common_elements.tee;
   }
 
   ret = TRUE;
@@ -2345,30 +2311,114 @@ GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer 
   //버퍼 추출
   GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
   if (!buf)
-      return GST_PAD_PROBE_OK;
+    return GST_PAD_PROBE_OK;
   // 버퍼에 메타데이터 가져옴
   NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buf);
   if (!batch_meta)
-      return GST_PAD_PROBE_OK;
+    return GST_PAD_PROBE_OK;
   // 각 프레임마다 반복(카메라 여러개 쓸때ㅇ)
   for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next)
   {
-      NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
+    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
+    uint64_t frame_number = frame_meta->frame_num;
 
     // 프레임 안에 객체별로 순화함
+    int obj_count = 0;
     for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
     {
       NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
       count_manager_process_obj(obj_meta->class_id, obj_meta->object_id);
+      obj_count++;
     }
 
-    // json생성 후 출력 + cur초기화
-    char json_payload[512];
-    count_manager_get_json(json_payload, sizeof(json_payload));
- 
-    // mqtt 발행  
-    mqtt_client_publish("deepstream/count", json_payload);
+    // Analytics 메타데이터 처리
+    uint64_t entry_cnt = 0;
+    uint64_t exit_cnt = 0;
+    uint64_t roi_count = 0;
+    bool found_analytics = false;
+
+    for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user; l_user = l_user->next)
+    {
+      NvDsUserMeta *user_meta = (NvDsUserMeta *)l_user->data;
+      
+      if (user_meta->base_meta.meta_type == NVDS_USER_FRAME_META_NVDSANALYTICS)
+      {
+        found_analytics = true;
+        NvDsAnalyticsFrameMeta *analytics_meta = 
+            (NvDsAnalyticsFrameMeta *)user_meta->user_meta_data;
+        
+        if (!analytics_meta)
+        {
+          g_print("[DEBUG] Analytics meta is NULL!\n");
+          continue;
+        }
+
+        // 디버그 전체 맵 내용 출력
+        g_print("[DEBUG] Frame %llu Analytics Data:\n", (unsigned long long)frame_number);
+        g_print("[DEBUG] objLCCumCnt size: %zu\n", analytics_meta->objLCCumCnt.size());
+        
+        // 모든 Line Crossing 데이터 출력
+        for (auto &lc_pair : analytics_meta->objLCCumCnt)
+        {
+          g_print("[DEBUG]   LC[%s] = %llu\n", 
+                  lc_pair.first.c_str(), 
+                  (unsigned long long)lc_pair.second);
+          
+          // 키 이름으로 매칭
+          std::string key = lc_pair.first;
+          if (key.find("entry") != std::string::npos || key.find("Entry") != std::string::npos)
+          {
+            entry_cnt = lc_pair.second;
+            g_print("[DEBUG]   -> Matched as Entry: %llu\n", (unsigned long long)entry_cnt);
+          }
+          else if (key.find("exit") != std::string::npos || key.find("Exit") != std::string::npos)
+          {
+            exit_cnt = lc_pair.second;
+            g_print("[DEBUG]   -> Matched as Exit: %llu\n", (unsigned long long)exit_cnt);
+          }
+        }
+
+        // objLCCurrCnt도 확인
+        g_print("[DEBUG] objLCCurrCnt size: %zu\n", analytics_meta->objLCCurrCnt.size());
+        for (auto &lc_pair : analytics_meta->objLCCurrCnt)
+        {
+          g_print("[DEBUG]   CurrentLC[%s] = %llu\n", 
+                  lc_pair.first.c_str(), 
+                  (unsigned long long)lc_pair.second);
+        }
+
+        // ROI 내 객체 수 확인
+        g_print("[DEBUG] objInROIcnt size: %zu\n", analytics_meta->objInROIcnt.size());
+        for (auto &roi_pair : analytics_meta->objInROIcnt)
+        {
+          g_print("[DEBUG]   ROI[%s] = %d\n", 
+                  roi_pair.first.c_str(), 
+                  roi_pair.second);
+          roi_count += roi_pair.second;
+        }
+
+        g_print("[Analytics] Frame=%llu, Entry=%llu, Exit=%llu, ROI=%llu\n",
+                (unsigned long long)frame_number,
+                (unsigned long long)entry_cnt,
+                (unsigned long long)exit_cnt,
+                (unsigned long long)roi_count);
+      }
+    }
+
+    if (!found_analytics)
+    {
+      g_print("[DEBUG] Frame %llu: No analytics metadata found!\n", 
+              (unsigned long long)frame_number);
+    }
+
+    // count_manager에 업데이트
+    count_manager_update_analytics(entry_cnt, exit_cnt, roi_count, frame_number);
   }
+
+  // JSON 생성 및 MQTT 발행
+  char json_payload[1024];
+  count_manager_get_json(json_payload, sizeof(json_payload));
+  mqtt_client_publish("deepstream/count", json_payload);
 
   return GST_PAD_PROBE_OK;
 }

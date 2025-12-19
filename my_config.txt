@@ -165,6 +165,10 @@ ll-config-file=/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/
 gpu-id=0
 display-tracking-id=1
 
+[nvds-analytics]
+enable=1
+config-file=nvdsanalytics_config.txt
+
 [secondary-gie0]
 enable=1
 model-engine-file=/opt/nvidia/deepstream/deepstream/samples/models/Secondary_VehicleTypes/resnet18_vehicletypenet_pruned.onnx_b16_gpu0_int8.engine

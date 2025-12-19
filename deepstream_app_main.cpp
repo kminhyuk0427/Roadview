@@ -131,7 +131,7 @@ all_bbox_generated(AppCtx *appCtx, GstBuffer *buf,
   for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame != NULL;
        l_frame = l_frame->next)
   {
-    NvDsFrameMeta *frame_meta = l_frame->data;
+    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
     for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj != NULL;
          l_obj = l_obj->next)
     {
@@ -613,7 +613,7 @@ overlay_graphics(AppCtx *appCtx, GstBuffer *buf,
       0, 1, 0, 1};
   display_meta->text_params[0].font_params.font_size =
       appCtx->config.osd_config.text_size * 1.5;
-  display_meta->text_params[0].font_params.font_name = "Serif";
+  display_meta->text_params[0].font_params.font_name = const_cast<char*>("Serif");
   display_meta->text_params[0].set_bg_clr = 1;
   display_meta->text_params[0].text_bg_clr = (NvOSD_ColorParams){
       0, 0, 0, 1.0};
@@ -634,7 +634,7 @@ overlay_graphics(AppCtx *appCtx, GstBuffer *buf,
         0, 1, 0, 1};
     display_meta->text_params[1].font_params.font_size =
         appCtx->config.osd_config.text_size * 1.5;
-    display_meta->text_params[1].font_params.font_name = "Arial";
+    display_meta->text_params[1].font_params.font_name = const_cast<char*>("Arial");
     display_meta->text_params[1].set_bg_clr = 1;
     display_meta->text_params[1].text_bg_clr = (NvOSD_ColorParams){
         0, 0, 0, 1.0};
@@ -760,7 +760,7 @@ int main(int argc, char *argv[])
 
   for (i = 0; i < num_instances; i++)
   {
-    appCtx[i] = g_malloc0(sizeof(AppCtx));
+    appCtx[i] = (AppCtx*)g_malloc0(sizeof(AppCtx));
     appCtx[i]->person_class_id = -1;
     appCtx[i]->car_class_id = -1;
     appCtx[i]->index = i;

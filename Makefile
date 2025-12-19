@@ -25,34 +25,37 @@ ifeq ($(TARGET_DEVICE),aarch64)
   CFLAGS+= -DPLATFORM_TEGRA
 endif
 
-SRCS:= $(wildcard *.c) $(wildcard *.cpp)
-SRCS+= $(wildcard ../../apps-common/src/*.c)
-SRCS+= $(wildcard ../../apps-common/src/deepstream-yaml/*.cpp)
+#C
+C_SRCS:= $(wildcard ../../apps-common/src/*.c)
+#C++
+CXX_SRCS:= $(wildcard *.cpp)
+CXX_SRCS+= $(wildcard ../../apps-common/src/deepstream-yaml/*.cpp)
 
-SRCS+= mqtt/mqtt_client.c
-SRCS+= count/count_manager.c
+C_SRCS+= mqtt/mqtt_client.c
+C_SRCS+= count/count_manager.c
 
 INCS:= $(wildcard *.h)
 
 PKGS:= gstreamer-1.0 gstreamer-video-1.0 x11 json-glib-1.0
 
-OBJS:= $(SRCS:.c=.o)
-OBJS:= $(OBJS:.cpp=.o)
+# C, C++ 오브젝트 파일
+C_OBJS:= $(C_SRCS:.c=.o)
+CXX_OBJS:= $(CXX_SRCS:.cpp=.o)
+OBJS:= $(C_OBJS) $(CXX_OBJS)
 
-CFLAGS+= -I./ -I../../apps-common/includes \
-		 -I../../../includes -DDS_VERSION_MINOR=1 -DDS_VERSION_MAJOR=5 \
-		 -I$(CUDA_HOME)/include
-#-I /usr/local/cuda-$(CUDA_VER)/include
-
+CFLAGS+= -I./ -I../../apps-common/includes -I../../../includes
+CFLAGS+= -DDS_VERSION_MINOR=1 -DDS_VERSION_MAJOR=5
+CFLAGS+= -I$(CUDA_HOME)/include
 CFLAGS+= -Iinclude
 CFLAGS+= -I./mqtt
 
 #LIBS:= -L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart
 LIBS:= -L$(CUDA_HOME)/lib64/ -lcudart
 
-LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper -lnvdsgst_customhelper \
-	  -lnvdsgst_smartrecord -lnvds_utils -lnvds_msgbroker -lm -lyaml-cpp \
-    -lcuda -lgstrtspserver-1.0 -ldl -Wl,-rpath,$(LIB_INSTALL_DIR)
+LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper
+LIBS+= -lnvdsgst_customhelper -lnvdsgst_smartrecord -lnvds_utils
+LIBS+= -lnvds_msgbroker -lm -lyaml-cpp -lcuda -lgstrtspserver-1.0 -ldl
+LIBS+= -Wl,-rpath,$(LIB_INSTALL_DIR)
 
 CFLAGS+= $(shell pkg-config --cflags $(PKGS))
 

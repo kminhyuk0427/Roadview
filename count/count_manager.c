@@ -19,14 +19,11 @@ static uint64_t cur_count[NUM_CLASSES] = {0};
 static uint64_t seen_ids[NUM_CLASSES][MAX_TRACKED];
 static int seen_count[NUM_CLASSES] = {0};
 
+// Analytics 데이터
+static AnalyticsData analytics_data = {0, 0, 0, 0, 0};
+
 //mutex
 static pthread_mutex_t cm_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static uint64_t frame_count = 0;
-
-static const char* class_names[NUM_CLASSES] = {
-    "car", "bicycle", "person", "sign"
-};
 
 //초기화
 void count_manager_init(void)
@@ -40,7 +37,11 @@ void count_manager_init(void)
         seen_count[c] = 0;
     }
 
-    frame_count = 0;
+    analytics_data.entry_count = 0;
+    analytics_data.exit_count = 0;
+    analytics_data.roi_count = 0;
+    analytics_data.frame_number = 0;
+    analytics_data.total_objects = 0;
 
     pthread_mutex_unlock(&cm_lock);
 }
@@ -86,6 +87,26 @@ void count_manager_process_obj(int class_id, uint64_t object_id)
     pthread_mutex_unlock(&cm_lock);
 }
 
+// analytics 데이터 업데이트
+void count_manager_update_analytics(uint64_t entry, uint64_t exit, uint64_t roi_count, uint64_t frame_num)
+{
+    pthread_mutex_lock(&cm_lock);
+    
+    analytics_data.entry_count = entry;
+    analytics_data.exit_count = exit;
+    analytics_data.roi_count = roi_count;
+    analytics_data.frame_number = frame_num;
+    
+    // 전체 객체 수 계산
+    analytics_data.total_objects = 0;
+    for (int c = 0; c < NUM_CLASSES; c++)
+    {
+        analytics_data.total_objects += cur_count[c];
+    }
+    
+    pthread_mutex_unlock(&cm_lock);
+}
+
 // JSON 생성 함수(프래임마다 계속 출력)
 void count_manager_get_json(char *out, size_t out_size)
 {
@@ -96,14 +117,26 @@ void count_manager_get_json(char *out, size_t out_size)
 
     // 통계 문자열 생성
     snprintf(out, out_size,
-             "car:cur=%llu,total=%llu | "
-             "bicycle:cur=%llu,total=%llu | "
-             "person:cur=%llu,total=%llu | "
-             "sign:cur=%llu,total=%llu",
+             "\nframe number:%llu\n"
+             "[objects] "
+             "all obj:%llu\n"
+             "car:cur:%llu, total:%llu\n"
+             "bicycle:cur:%llu, total:%llu\n"
+             "person:cur:%llu, total:%llu\n"
+             "sign:cur:%llu, total:%llu\n"
+             "[analytics]\n"
+             "entry:%llu\n"
+             "exit:%llu\n"
+             "ROI:%llu\n",
+             (unsigned long long)analytics_data.frame_number,
+             (unsigned long long)analytics_data.total_objects,
              (unsigned long long)cur_count[0], (unsigned long long)total_count[0],
              (unsigned long long)cur_count[1], (unsigned long long)total_count[1],
              (unsigned long long)cur_count[2], (unsigned long long)total_count[2],
-             (unsigned long long)cur_count[3], (unsigned long long)total_count[3]);
+             (unsigned long long)cur_count[3], (unsigned long long)total_count[3],
+             (unsigned long long)analytics_data.entry_count,
+             (unsigned long long)analytics_data.exit_count,
+             (unsigned long long)analytics_data.roi_count);
 
     for (int c = 0; c < NUM_CLASSES; c++)
         cur_count[c] = 0;
