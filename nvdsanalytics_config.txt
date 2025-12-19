@@ -65,11 +65,14 @@ class-id=-1
 
 [line-crossing-stream-0]
 enable=1
-#Label;direction;lc
-line-crossing-Exit=1304;758;1160;678;678;716;1446;617
-line-crossing-Entry=914;570;1008;615;617;670;1378;600
+# LC Pair 1 - Entry and Exit
+line-crossing-LC1-Entry=1304;758;1160;678;678;716;1446;617
+line-crossing-LC1-Exit=914;570;1008;615;617;670;1378;600
+# LC Pair 2 - Entry and Exit
+line-crossing-LC2-Entry=442;669;462;609;362;601;576;606
+line-crossing-LC2-Exit=474;534;473;566;377;579;572;581
 #line_color=0.75;0.25;0;1
-class-id=0
+class-id=2
 #extended when 0- only counts crossing on the configured Line
 #              1- assumes extended Line crossing counts all the crossing
 extended=0
@@ -81,10 +84,13 @@ mode=loose
 
 [line-crossing-stream-1]
 enable=1
-#Label;direction;lc
-line-crossing-Exit=900;1000;850;900;678;716;1446;617
-line-crossing-Entry=950;670;1000;750;660;670;1378;600
-class-id=0
+# LC Pair 1 - Entry and Exit
+line-crossing-LC1-Entry=1304;758;1160;678;678;716;1446;617
+line-crossing-LC1-Exit=914;570;1008;615;617;670;1378;600
+# LC Pair 2 - Entry and Exit
+line-crossing-LC2-Entry=442;669;462;609;362;601;576;606
+line-crossing-LC2-Exit=474;534;473;566;377;579;572;581
+class-id=2
 #extended when 0- only counts crossing on the configured Line
 #              1- assumes extended Line crossing counts all the crossing
 extended=1

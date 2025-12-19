@@ -2322,20 +2322,35 @@ GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer 
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
     uint64_t frame_number = frame_meta->frame_num;
 
-    // 프레임 안에 객체별로 순화함
-    int obj_count = 0;
+    // 전체 객체 통계
+    std::unordered_map<int, int> obj_count_by_class;
     for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
     {
       NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
       count_manager_process_obj(obj_meta->class_id, obj_meta->object_id);
-      obj_count++;
+      obj_count_by_class[obj_meta->class_id]++;
+    }
+
+    // 프레임별 객체 통계 출력
+    if (frame_number % 30 == 0) // 30프레임마다
+    {
+      g_print("\n[FRAME %llu] Total Objects by Class:\n", (unsigned long long)frame_number);
+      const char *class_names[] = {"Car", "Bicycle", "Person", "Sign"};
+      for (auto &pair : obj_count_by_class)
+      {
+        const char *name = (pair.first >= 0 && pair.first < 4) ? class_names[pair.first] : "Unknown";
+        g_print("  Class %d (%s): %d objects\n", pair.first, name, pair.second);
+      }
     }
 
     // Analytics 메타데이터 처리
-    uint64_t entry_cnt = 0;
-    uint64_t exit_cnt = 0;
+    uint64_t lc1_entry_cnt = 0, lc1_exit_cnt = 0;
+    uint64_t lc2_entry_cnt = 0, lc2_exit_cnt = 0;
     uint64_t roi_count = 0;
     bool found_analytics = false;
+
+    // ROI 내 객체 클래스별로 저장
+    std::unordered_map<int, std::vector<uint64_t>> roi_objects_by_class;
 
     for (NvDsMetaList *l_user = frame_meta->frame_user_meta_list; l_user; l_user = l_user->next)
     {
@@ -2346,77 +2361,134 @@ GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer 
         found_analytics = true;
         NvDsAnalyticsFrameMeta *analytics_meta = 
             (NvDsAnalyticsFrameMeta *)user_meta->user_meta_data;
-        
-        if (!analytics_meta)
-        {
-          g_print("[DEBUG] Analytics meta is NULL!\n");
-          continue;
-        }
 
-        // 디버그 전체 맵 내용 출력
-        g_print("[DEBUG] Frame %llu Analytics Data:\n", (unsigned long long)frame_number);
-        g_print("[DEBUG] objLCCumCnt size: %zu\n", analytics_meta->objLCCumCnt.size());
-        
-        // 모든 Line Crossing 데이터 출력
+        // Line Crossing 데이터 파싱
         for (auto &lc_pair : analytics_meta->objLCCumCnt)
         {
-          g_print("[DEBUG]   LC[%s] = %llu\n", 
-                  lc_pair.first.c_str(), 
-                  (unsigned long long)lc_pair.second);
-          
-          // 키 이름으로 매칭
           std::string key = lc_pair.first;
-          if (key.find("entry") != std::string::npos || key.find("Entry") != std::string::npos)
-          {
-            entry_cnt = lc_pair.second;
-            g_print("[DEBUG]   -> Matched as Entry: %llu\n", (unsigned long long)entry_cnt);
-          }
-          else if (key.find("exit") != std::string::npos || key.find("Exit") != std::string::npos)
-          {
-            exit_cnt = lc_pair.second;
-            g_print("[DEBUG]   -> Matched as Exit: %llu\n", (unsigned long long)exit_cnt);
-          }
-        }
+          uint64_t value = lc_pair.second;
 
-        // objLCCurrCnt도 확인
-        g_print("[DEBUG] objLCCurrCnt size: %zu\n", analytics_meta->objLCCurrCnt.size());
-        for (auto &lc_pair : analytics_meta->objLCCurrCnt)
-        {
-          g_print("[DEBUG]   CurrentLC[%s] = %llu\n", 
-                  lc_pair.first.c_str(), 
-                  (unsigned long long)lc_pair.second);
+          if (key.find("LC1-Entry") != std::string::npos ||
+              key.find("LC1-entry") != std::string::npos ||
+              (key.find("Entry") != std::string::npos && key.find("LC2") == std::string::npos))
+          {
+            lc1_entry_cnt = value;
+          }
+          else if (key.find("LC1-Exit") != std::string::npos ||
+                   key.find("LC1-exit") != std::string::npos ||
+                   (key.find("Exit") != std::string::npos && key.find("LC2") == std::string::npos))
+          {
+            lc1_exit_cnt = value;
+          }
+          else if (key.find("LC2-Entry") != std::string::npos ||
+                   key.find("LC2-entry") != std::string::npos)
+          {
+            lc2_entry_cnt = value;
+          }
+          else if (key.find("LC2-Exit") != std::string::npos ||
+                   key.find("LC2-exit") != std::string::npos)
+          {
+            lc2_exit_cnt = value;
+          }
         }
 
         // ROI 내 객체 수 확인
-        g_print("[DEBUG] objInROIcnt size: %zu\n", analytics_meta->objInROIcnt.size());
         for (auto &roi_pair : analytics_meta->objInROIcnt)
         {
-          g_print("[DEBUG]   ROI[%s] = %d\n", 
-                  roi_pair.first.c_str(), 
-                  roi_pair.second);
           roi_count += roi_pair.second;
         }
-
-        g_print("[Analytics] Frame=%llu, Entry=%llu, Exit=%llu, ROI=%llu\n",
-                (unsigned long long)frame_number,
-                (unsigned long long)entry_cnt,
-                (unsigned long long)exit_cnt,
-                (unsigned long long)roi_count);
       }
     }
 
-    if (!found_analytics)
+    // ROI 내 객체의 클래스 ID 추출 
+    int total_roi_objs = 0;
+    std::unordered_map<int, int> roi_obj_count_by_class;
+
+    for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
     {
-      g_print("[DEBUG] Frame %llu: No analytics metadata found!\n", 
-              (unsigned long long)frame_number);
+      NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
+      int class_id = obj_meta->class_id;
+      uint64_t object_id = obj_meta->object_id;
+
+      // 객체 메타 에서 ROI 정보 확인
+      bool in_roi = false;
+      for (NvDsMetaList *l_obj_user = obj_meta->obj_user_meta_list;
+           l_obj_user != NULL; l_obj_user = l_obj_user->next)
+      {
+        NvDsUserMeta *obj_user_meta = (NvDsUserMeta *)l_obj_user->data;
+
+        if (obj_user_meta->base_meta.meta_type == NVDS_USER_OBJ_META_NVDSANALYTICS)
+        {
+          NvDsAnalyticsObjInfo *obj_info =
+              (NvDsAnalyticsObjInfo *)obj_user_meta->user_meta_data;
+
+          // 객체가 ROI 내에 있는지 확인
+          if (obj_info && obj_info->roiStatus.size() > 0)
+          {
+            in_roi = true;
+            // ROI 내 객체를 클래스별로 분류
+            roi_objects_by_class[class_id].push_back(object_id);
+            roi_obj_count_by_class[class_id]++;
+            total_roi_objs++;
+
+            // 상세 로그
+            if (frame_number % 30 == 0)
+            {
+              const char *class_names[] = {"Car", "Bicycle", "Person", "Sign"};
+              const char *class_name = (class_id >= 0 && class_id < 4) ? class_names[class_id] : "Unknown";
+
+              for (auto &roi_name : obj_info->roiStatus)
+              {
+                g_print("[ROI_DETAIL] Frame %llu: %s (ID=%llu, Class=%d) in ROI '%s'\n",
+                        (unsigned long long)frame_number,
+                        class_name,
+                        (unsigned long long)object_id,
+                        class_id,
+                        roi_name.c_str());
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // ROI 통계 출력
+    if (frame_number % 30 == 0 && total_roi_objs > 0)
+    {
+      g_print("\n[ROI_STATS] Frame %llu: %d objects in ROI\n",
+              (unsigned long long)frame_number, total_roi_objs);
+      const char *class_names[] = {"Car", "Bicycle", "Person", "Sign"};
+      for (auto &pair : roi_obj_count_by_class)
+      {
+        const char *name = (pair.first >= 0 && pair.first < 4) ? class_names[pair.first] : "Unknown";
+        g_print("  %s (Class %d): %d objects\n", name, pair.first, pair.second);
+      }
+      g_print("\n");
+    }
+
+    // ROI에 있는 각 클래스의 객체를 count_manager에 등록
+    for (auto &class_pair : roi_objects_by_class)
+    {
+      int class_id = class_pair.first;
+      std::vector<uint64_t> &obj_ids = class_pair.second;
+
+      for (uint64_t obj_id : obj_ids)
+      {
+        count_manager_process_roi_obj(class_id, obj_id);
+      }
     }
 
     // count_manager에 업데이트
-    count_manager_update_analytics(entry_cnt, exit_cnt, roi_count, frame_number);
+    count_manager_update_analytics(
+        lc1_entry_cnt, lc1_exit_cnt,
+        lc2_entry_cnt, lc2_exit_cnt,
+        roi_count,
+        frame_number);
   }
 
   // JSON 생성 및 MQTT 발행
-  char json_payload[1024];
+  char json_payload[2048];
   count_manager_get_json(json_payload, sizeof(json_payload));
   mqtt_client_publish("deepstream/count", json_payload);
 
