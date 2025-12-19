@@ -56,12 +56,13 @@ LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper
 LIBS+= -lnvdsgst_customhelper -lnvdsgst_smartrecord -lnvds_utils
 LIBS+= -lnvds_msgbroker -lm -lyaml-cpp -lcuda -lgstrtspserver-1.0 -ldl
 LIBS+= -Wl,-rpath,$(LIB_INSTALL_DIR)
+LIBS+= -L/usr/local/lib -lpaho-mqtt3c
 
 CFLAGS+= $(shell pkg-config --cflags $(PKGS))
 
 LIBS+= $(shell pkg-config --libs $(PKGS))
 
-LIBS+= -lmosquitto -lrt
+LIBS+= -lpthread
 
 all: $(APP)
 

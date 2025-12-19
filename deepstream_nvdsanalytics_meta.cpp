@@ -59,7 +59,7 @@ process_analytics_metadata(void *batch_meta_ptr)
 				NvDsAnalyticsFrameMeta *analytics_meta =
 					(NvDsAnalyticsFrameMeta *)user_meta->user_meta_data;
 
-				// ROI 카운트 출력 (objInROIcnt는 std::unordered_map이므로 iterator 사용)
+				// ROI 카운트 출력
 				for (auto &roi_pair : analytics_meta->objInROIcnt)
 				{
 					g_print("[Analytics] ROI[%s]: %d objects\n",
@@ -67,7 +67,7 @@ process_analytics_metadata(void *batch_meta_ptr)
 							roi_pair.second);
 				}
 
-				// 현재 라인 크로스 카운트 (objLCCurrCnt도 std::unordered_map)
+				// 현재 라인 크로스 카운트
 				for (auto &lc_pair : analytics_meta->objLCCurrCnt)
 				{
 					g_print("[Analytics] LineCross[%s]: %lu\n",
@@ -75,7 +75,7 @@ process_analytics_metadata(void *batch_meta_ptr)
 							lc_pair.second);
 				}
 
-				// 누적 카운트 (std::unordered_map)
+				// 누적 카운트
 				AnalyticsUserMeta custom_data = {0};
 				analytics_custom_parse_nvdsanalytics_meta_data(l_user, &custom_data);
 

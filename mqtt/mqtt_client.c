@@ -1,50 +1,57 @@
-#include <mosquitto.h>
+#include "mqtt_client.h"
+#include <MQTTClient.h>
 #include <stdio.h>
-#include <stdint.h>
-#include <string.h>
-#include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
-#include <stdbool.h>
 
 // MQTT 클라이언트 포인터, 연결 상태 플래그
-static struct mosquitto *mosq = NULL;
+static MQTTClient client = NULL;
 static volatile bool mqtt_connected = false;
 
 // 멀티스레드 동시접근 방지
 static pthread_mutex_t mqtt_lock = PTHREAD_MUTEX_INITIALIZER;
 
-// 마지막으로 사용한 호스트, 포트 (필요 시 재연결용)
+// 마지막으로 사용한 호스트, 포트 (재연결용
 static char last_host[256] = {0};
 static int last_port = 0;
+static char mqtt_address[512] = {0};
 
-// 연결 성공/실패 시 호출
-static void on_connect(struct mosquitto *mosq_, void *obj, int rc)
+// MQTT 설정
+#define MQTT_CLIENTID "DeepStreamClient"
+#define QOS 1
+#define TIMEOUT 10000L
+
+// 연결 끊김
+void connection_lost(void *context, char *cause)
 {
-    (void)mosq_;
-    (void)obj;
-
-    pthread_mutex_lock(&mqtt_lock);
-    mqtt_connected = (rc == 0);
-    pthread_mutex_unlock(&mqtt_lock);
-
-    if (rc == 0)
-        printf("[MQTT] connect: success\n");
-    else
-        printf("[MQTT] connect: fail: %s\n", mosquitto_strerror(rc));
-}
-
-//연결 끊김 시 호출
-static void on_disconnect(struct mosquitto *mosq_, void *obj, int rc)
-{
-    (void)mosq_;
-    (void)obj;
+    (void)context;
 
     pthread_mutex_lock(&mqtt_lock);
     mqtt_connected = false;
     pthread_mutex_unlock(&mqtt_lock);
 
-    printf("[MQTT] connect: disconnection (rc=%d).\n", rc);
+    printf("[MQTT] Connection lost: %s\n", cause ? cause : "Unknown");
+    printf("[MQTT] Attempting to reconnect...\n");
+}
+
+// 메시지 도착
+int message_arrived(void *context, char *topicName, int topicLen, MQTTClient_message *message)
+{
+    (void)context;
+    (void)topicName;
+    (void)topicLen;
+
+    MQTTClient_freeMessage(&message);
+    MQTTClient_free(topicName);
+    return 1;
+}
+
+// 전송 완료
+void delivery_complete(void *context, MQTTClient_deliveryToken dt)
+{
+    (void)context;
+    (void)dt;
 }
 
 //초기화
@@ -60,108 +67,47 @@ void mqtt_client_init(const char *host, int port)
     pthread_mutex_lock(&mqtt_lock);
     strncpy(last_host, host, sizeof(last_host) - 1);
     last_port = port;
+    snprintf(mqtt_address, sizeof(mqtt_address), "tcp://%s:%d", host, port);
     pthread_mutex_unlock(&mqtt_lock);
 
     printf("[MQTT] init start: host=%s port=%d\n", host, port);
 
-    // SIGPIPE 무시 (네트워크 끊겨도 프로그램 안죽게)
-    signal(SIGPIPE, SIG_IGN);
-
-    mosquitto_lib_init();
-
     // 클라이언트 생성
-    mosq = mosquitto_new(NULL, true, NULL);
-    if (!mosq)
+    int rc = MQTTClient_create(&client, mqtt_address, MQTT_CLIENTID,
+                               MQTTCLIENT_PERSISTENCE_NONE, NULL);
+    if (rc != MQTTCLIENT_SUCCESS)
     {
-        printf("[MQTT] mosquitto_new() failed\n");
-        mosquitto_lib_cleanup();
+        printf("[MQTT] MQTTClient_create failed: %d\n", rc);
         return;
     }
 
-    // 연결 성공/실패 알림받기
-    mosquitto_connect_callback_set(mosq, on_connect);
-    mosquitto_disconnect_callback_set(mosq, on_disconnect);
+    // 콜백 설정
+    MQTTClient_setCallbacks(client, NULL, connection_lost,
+                            message_arrived, delivery_complete);
 
-    //네트워크 I/O 백그라운드 스레드 시작
-    if (mosquitto_loop_start(mosq) != MOSQ_ERR_SUCCESS)
-    {
-        printf("[MQTT] mosquitto_loop_start() failed\n");
-        mosquitto_destroy(mosq);
-        mosq = NULL;
-        mosquitto_lib_cleanup();
-        return;
-    }
+    // 연결 옵션 설정
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    conn_opts.keepAliveInterval = 20;
+    conn_opts.cleansession = 1;
+    conn_opts.connectTimeout = 10;
+    conn_opts.retryInterval = 5;
 
-    // 비동기 연결 요청
-    int rc = mosquitto_connect_async(mosq, host, port, 60);
-    if (rc != MOSQ_ERR_SUCCESS)
+    // 연결 시도
+    rc = MQTTClient_connect(client, &conn_opts);
+    if (rc != MQTTCLIENT_SUCCESS)
     {
-        printf("[MQTT] mosquitto_connect_async failed: %s\n", mosquitto_strerror(rc));
+        printf("[MQTT] MQTTClient_connect failed: %d\n", rc);
         pthread_mutex_lock(&mqtt_lock);
         mqtt_connected = false;
         pthread_mutex_unlock(&mqtt_lock);
         return;
     }
 
-    printf("[MQTT] mosquitto_connect_async called (waiting for on_connect)...\n");
-}
-
-// (내부용) 실제 publish 수행
-static int mqtt_do_publish(const char *topic, const void *payload, int payloadlen, int qos, bool retain)
-{
-    if (!topic)
-        return MOSQ_ERR_INVAL;
-
     pthread_mutex_lock(&mqtt_lock);
-
-    struct mosquitto *m = mosq;
-    bool connected = mqtt_connected;
-
-    if (!m || !connected)
-    {
-        pthread_mutex_unlock(&mqtt_lock);
-        return MOSQ_ERR_NO_CONN;
-    }
-
-    int rc = mosquitto_publish(m, NULL, topic, payloadlen, payload, qos, retain);
-    if (rc != MOSQ_ERR_SUCCESS)
-    {
-        printf("[MQTT] mosquitto_publish failed: %s\n", mosquitto_strerror(rc));
-        mqtt_connected = false;
-    }
-
+    mqtt_connected = true;
     pthread_mutex_unlock(&mqtt_lock);
 
-    return rc;
-}
-
-// MQTT 종료 및 정리
-void mqtt_client_deinit()
-{
-    // 전체 파괴 과정을 락 안에서 수행하여 race를 차단
-    pthread_mutex_lock(&mqtt_lock);
-    struct mosquitto *m = mosq;
-    if (!m)
-    {
-        // 이미 초기화 안 된 상태면 그냥 정리 
-        pthread_mutex_unlock(&mqtt_lock);
-        mosquitto_lib_cleanup();
-        return;
-    }
-    
-    mosquitto_disconnect(m);
-    mosquitto_loop_stop(m, true);
-    mosquitto_destroy(m);
-
-    // 전역 상태 정리
-    mosq = NULL;
-    mqtt_connected = false;
-    last_host[0] = '\0';
-    last_port = 0;
-    pthread_mutex_unlock(&mqtt_lock);
-
-    mosquitto_lib_cleanup();
-    printf("[MQTT] Deinitialized\n");
+    printf("[MQTT] Connected successfully!\n");
 }
 
 // 문자열 payload publish
@@ -170,14 +116,61 @@ void mqtt_client_publish(const char *topic, const char *payload)
     if (!topic || !payload)
         return;
 
-    // printf("MQTT call\n  Topic: %s\n  Payload: %s\n", topic, payload);
+    pthread_mutex_lock(&mqtt_lock);
 
-    int rc = mqtt_do_publish(topic, payload, strlen(payload), 0, false);
-
-    if (rc == MOSQ_ERR_SUCCESS)
-        printf("[MQTT] Publish OK\n");
-    else if (rc == MOSQ_ERR_NO_CONN)
+    if (!client || !mqtt_connected)
+    {
+        pthread_mutex_unlock(&mqtt_lock);
         printf("[MQTT] Publish skipped: not connected\n");
+        return;
+    }
+
+    MQTTClient_message pubmsg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken token;
+
+    pubmsg.payload = (void *)payload;
+    pubmsg.payloadlen = strlen(payload);
+    pubmsg.qos = QOS;
+    pubmsg.retained = 0;
+
+    int rc = MQTTClient_publishMessage(client, topic, &pubmsg, &token);
+
+    pthread_mutex_unlock(&mqtt_lock);
+
+    if (rc == MQTTCLIENT_SUCCESS)
+    {
+        printf("[MQTT] Publish OK - Topic: %s\n", topic);
+    }
     else
-        printf("[MQTT] Publish Failed: %s\n", mosquitto_strerror(rc));
+    {
+        printf("[MQTT] Publish Failed: %d\n", rc);
+        pthread_mutex_lock(&mqtt_lock);
+        mqtt_connected = false;
+        pthread_mutex_unlock(&mqtt_lock);
+    }
+}
+
+// MQTT 종료 및 정리
+void mqtt_client_deinit(void)
+{
+    pthread_mutex_lock(&mqtt_lock);
+
+    if (client)
+    {
+        if (mqtt_connected)
+        {
+            MQTTClient_disconnect(client, 10000);
+        }
+        MQTTClient_destroy(&client);
+        client = NULL;
+    }
+
+    mqtt_connected = false;
+    last_host[0] = '\0';
+    last_port = 0;
+    mqtt_address[0] = '\0';
+
+    pthread_mutex_unlock(&mqtt_lock);
+
+    printf("[MQTT] Deinitialized\n");
 }
