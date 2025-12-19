@@ -10,10 +10,7 @@
 # its affiliates is strictly prohibited.
 ################################################################################
 
-CUDA_VER?=
-ifeq ($(CUDA_VER),)
-  $(error "CUDA_VER is not set")
-endif
+CUDA_HOME ?= /usr/local/cuda
 
 APP:= deepstream-app
 
