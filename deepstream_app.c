@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "count/count_manager.h"
+
 #include "deepstream_app.h"
 
 #define MAX_DISPLAY_LEN 64
@@ -56,6 +58,8 @@ static gboolean is_sink_available_for_source_id(NvDsConfig *config,
 
 static NvDsSensorInfo *s_sensor_info_create(NvDsSensorInfo *sensor_info);
 static void s_sensor_info_destroy(NvDsSensorInfo *sensor_info);
+
+GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer user_data);
 
 static NvDsSensorInfo *s_sensor_info_create(NvDsSensorInfo *sensor_info)
 {
@@ -1558,6 +1562,15 @@ create_common_elements(NvDsConfig *config, NvDsPipeline *pipeline,
     *sink_elem = pipeline->common_elements.tracker_bin.bin;
   }
 
+  // 트래커 뒤에 연결
+  NVGSTDS_ELEM_ADD_PROBE(
+      pipeline->common_elements.all_bbox_buffer_probe_id,
+      pipeline->common_elements.tracker_bin.bin,
+      "src",
+      tracker_buf_prob,
+      GST_PAD_PROBE_TYPE_BUFFER,
+      pipeline->common_elements.appCtx);
+
   if (config->primary_gie_config.enable)
   {
     /** if using nvmultiurisrcbin, override batch-size config for pgie */
@@ -2042,6 +2055,9 @@ create_pipeline(AppCtx *appCtx,
   pipeline->common_elements.appCtx = appCtx;
   // Decide where in the pipeline the element should be added and add only if
   // enabled
+
+  count_manager_init();
+
   if (config->dsexample_config.enable)
   {
     // Create dsexample element bin and set properties
@@ -2320,4 +2336,34 @@ resume_pipeline(AppCtx *appCtx)
   {
     return FALSE;
   }
+}
+
+GstPadProbeReturn tracker_buf_prob(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
+{
+    //버퍼 추출
+    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (!buf)
+        return GST_PAD_PROBE_OK;
+  // 버퍼에 메타데이터 가져옴
+    NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buf);
+    if (!batch_meta)
+        return GST_PAD_PROBE_OK;
+    // 각 프레임마다 반복(카메라 여러개 쓸때ㅇ)
+    for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame; l_frame = l_frame->next)
+    {
+        NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l_frame->data;
+
+        // 프레임 안에 객체별로 순화함
+        for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj; l_obj = l_obj->next)
+        {
+            NvDsObjectMeta *obj_meta = (NvDsObjectMeta *)l_obj->data;
+            count_manager_process_obj(obj_meta->class_id, obj_meta->object_id);
+        }
+
+        // json생성 후 출력 + cur초기화
+        char stats[512];
+        count_manager_get_json(stats, sizeof(stats));
+    }
+
+    return GST_PAD_PROBE_OK;
 }

@@ -19,6 +19,7 @@
 #include <termios.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include "count/count_manager.h"
 
 #define MAX_INSTANCES 128
 #define APP_TITLE "DeepStream"
@@ -666,6 +667,8 @@ int main(int argc, char *argv[])
   g_option_context_add_group(ctx, gst_init_get_option_group());
 
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, NULL);
+
+  count_manager_init();
 
   int current_device = -1;
   cudaGetDevice(&current_device);

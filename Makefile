@@ -22,12 +22,14 @@ LIB_INSTALL_DIR?=/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/lib/
 APP_INSTALL_DIR?=/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/bin/
 
 ifeq ($(TARGET_DEVICE),aarch64)
-  CFLAGS:= -DPLATFORM_TEGRA
+  CFLAGS+= -DPLATFORM_TEGRA
 endif
 
 SRCS:= $(wildcard *.c) $(wildcard *.cpp)
 SRCS+= $(wildcard ../../apps-common/src/*.c)
 SRCS+= $(wildcard ../../apps-common/src/deepstream-yaml/*.cpp)
+
+SRCS+= count/count_manager.c
 
 INCS:= $(wildcard *.h)
 
@@ -38,9 +40,13 @@ OBJS:= $(OBJS:.cpp=.o)
 
 CFLAGS+= -I./ -I../../apps-common/includes \
 		 -I../../../includes -DDS_VERSION_MINOR=1 -DDS_VERSION_MAJOR=5 \
-		 -I /usr/local/cuda-$(CUDA_VER)/include
+		 -I$(CUDA_HOME)/include
+#-I /usr/local/cuda-$(CUDA_VER)/include
 
-LIBS:= -L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart
+CFLAGS+= -Iinclude
+
+#LIBS:= -L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart
+LIBS:= -L$(CUDA_HOME)/lib64/ -lcudart
 
 LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper -lnvdsgst_customhelper \
 	  -lnvdsgst_smartrecord -lnvds_utils -lnvds_msgbroker -lm -lyaml-cpp \
@@ -49,6 +55,8 @@ LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper -lnvdsgs
 CFLAGS+= $(shell pkg-config --cflags $(PKGS))
 
 LIBS+= $(shell pkg-config --libs $(PKGS))
+
+LIBS+= -lrt
 
 all: $(APP)
 
