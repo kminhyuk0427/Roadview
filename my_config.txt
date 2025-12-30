@@ -35,14 +35,26 @@ nvbuf-memory-type=0
 [source0]
 enable=1
 #Type - 1=CameraV4L2 2=URI 3=MultiURI 4=RTSP
-type=2
-uri=file:///opt/nvidia/deepstream/deepstream/samples/streams/sample_1080p_h264.mp4
-#rtsp-reconnect-interval-sec=2
+type=4
+uri=RTSP_address
+num-sources=1
 gpu-id=0
 # (0): memtype_device   - Memory type Device
 # (1): memtype_pinned   - Memory type Host Pinned
 # (2): memtype_unified  - Memory type Unified
 cudadec-memtype=0
+# RTSP 연결 개선 설정
+rtsp-reconnect-interval-sec=5
+rtsp-reconnect-attempts=10
+drop-frame-interval=0
+# 레이턴시 설정
+latency=2000
+# 타임아웃 설정
+timeout=30
+# 버퍼 설정
+skip-frames-type=0
+# TCP 프로토콜 강제 사용
+# protocols=tcp
 
 [sink0]
 enable=1

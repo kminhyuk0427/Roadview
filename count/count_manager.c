@@ -28,6 +28,9 @@ static int roi_seen_count[NUM_CLASSES] = {0};
 // Analytics 데이터
 static AnalyticsData analytics_data = {0};
 
+// 시간 추적용 변수
+static int last_hour = -1;
+
 //mutex
 static pthread_mutex_t cm_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -37,6 +40,64 @@ static void get_current_timestamp(char *buffer, size_t size)
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     strftime(buffer, size, "%Y-%m-%dT%H:%M:%S", tm_info);
+}
+
+// 현재 시각 가져오기
+static int get_current_hour(void)
+{
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    return tm_info->tm_hour;
+}
+
+// ROI 카운트 초기화 함수
+static void reset_roi_counts_locked(void)
+{
+    printf("[COUNT_MGR] ===== HOURLY RESET: Clearing all ROI cumulative counts =====\n");
+
+    for (int c = 0; c < NUM_CLASSES; c++)
+    {
+        const char *class_names[] = {"Car", "Bicycle", "Person", "Sign"};
+        uint64_t old_count = analytics_data.roi_cumulative_count_per_class[c];
+
+        // ROI seen 배열 초기화
+        roi_seen_count[c] = 0;
+        memset(roi_seen_ids[c], 0, sizeof(roi_seen_ids[c]));
+
+        // ROI 누적 카운트 초기화
+        analytics_data.roi_cumulative_count_per_class[c] = 0;
+
+        if (old_count > 0)
+        {
+            printf("[COUNT_MGR]   %s: %llu -> 0\n",
+                   class_names[c],
+                   (unsigned long long)old_count);
+        }
+    }
+
+    printf("[COUNT_MGR] ===== ROI Reset Complete =====\n");
+}
+
+// 시간 체크 및 필요시 초기화
+static void check_and_reset_hourly_locked(void)
+{
+    int current_hour = get_current_hour();
+
+    // 처음 실행되는 경우
+    if (last_hour == -1)
+    {
+        last_hour = current_hour;
+        printf("[COUNT_MGR] Starting hour tracking at %d:00\n", current_hour);
+        return;
+    }
+
+    // 시간이 변경된 경우 (23시 -> 0시 케이스 포함)
+    if (current_hour != last_hour)
+    {
+        printf("[COUNT_MGR] Hour changed: %d -> %d\n", last_hour, current_hour);
+        reset_roi_counts_locked();
+        last_hour = current_hour;
+    }
 }
 
 //초기화
@@ -63,7 +124,13 @@ void count_manager_init(void)
     get_current_timestamp(analytics_data.json_timestamp,
                           sizeof(analytics_data.json_timestamp));
 
+    // 시간 추적 초기화
+    last_hour = get_current_hour();
+
     pthread_mutex_unlock(&cm_lock);
+
+    printf("[COUNT_MGR] Initialized with per-class ROI tracking and hourly reset\n");
+    printf("[COUNT_MGR] Starting at hour: %d\n", last_hour);
 }
 
 // 내부: 이미 본 객체인지 검사
@@ -155,6 +222,9 @@ void count_manager_process_roi_obj(int class_id, uint64_t object_id)
 
     pthread_mutex_lock(&cm_lock);
 
+    // 매 호출마다 시간 체크
+    check_and_reset_hourly_locked();
+
     // 처음 ROI에 들어온 해당 클래스의 객체라면 누적 카운트 증가
     roi_mark_seen_locked(class_id, object_id);
 
@@ -169,6 +239,9 @@ void count_manager_update_analytics(
     uint64_t frame_num)
 {
     pthread_mutex_lock(&cm_lock);
+
+    // 시간 체크 및 필요시 ROI 초기화
+    check_and_reset_hourly_locked();
 
     analytics_data.lc1_entry_count = lc1_entry;
     analytics_data.lc1_exit_count = lc1_exit;

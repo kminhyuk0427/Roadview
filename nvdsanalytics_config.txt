@@ -33,7 +33,7 @@ config-height=1080
 #         2: Display all info from 1 plus information about counts
 osd-mode=2
 #Set OSD font size that has to be displayed
-display-font-size=12
+display-font-size=9
 
 ## Per stream configuration
 [roi-filtering-stream-0]
@@ -41,38 +41,39 @@ display-font-size=12
 enable=1
 #ROI to filter select objects, and remove from meta data
 #왼쪽 위 꼭짓점부터 시계방향
-roi-RF=308;652;578;660;702;1080;0;868
+roi-RF=1500;420;1820;420;1920;1080;0;850
 #remove objects in the ROI
 inverse-roi=0
-class-id=2
+class-id=0;1;2
 
 ## Per stream configuration
 [roi-filtering-stream-1]
 #enable or disable following feature
 enable=1
 #ROI to filter select objects, and remove from meta data
-roi-RF=308;652;578;660;702;1080;0;868
+roi-RF=1500;420;1820;420;1920;1080;0;850
 #remove objects in the ROI
 inverse-roi=0
-class-id=2
+class-id=0;1;2
 
 [overcrowding-stream-1]
 enable=0
 roi-OC=0;0;579;400;642;900;0;900
 #no of objects that will trigger OC
 object-threshold=3
-class-id=-1
+class-id=0;1;2
+# 차, 오토바이, 사람만 인식
 
 [line-crossing-stream-0]
 enable=1
 # LC Pair 1 - Entry and Exit
-line-crossing-LC1-Entry=1304;758;1160;678;678;716;1446;617
-line-crossing-LC1-Exit=914;570;1008;615;617;670;1378;600
+line-crossing-LC1-Entry=1076;633;1004;664;972;667;1100;670
+line-crossing-LC1-Exit=877;722;945;691;962;677;1090;680
 # LC Pair 2 - Entry and Exit
-line-crossing-LC2-Entry=442;669;462;609;362;601;576;606
-line-crossing-LC2-Exit=474;534;473;566;377;579;572;581
+line-crossing-LC2-Entry=1429;738;1462;698;1328;680;1469;686
+line-crossing-LC2-Exit=1520;640;1494;672;1338;670;1479;676
 #line_color=0.75;0.25;0;1
-class-id=2
+class-id=0
 #extended when 0- only counts crossing on the configured Line
 #              1- assumes extended Line crossing counts all the crossing
 extended=0
@@ -80,17 +81,17 @@ extended=0
 #loose   : counts all crossing without strong adherence to direction
 #balanced: Strict direction adherence expected compared to mode=loose
 #strict  : Strict direction adherence expected compared to mode=balanced
-mode=loose
+mode=strict
 
 [line-crossing-stream-1]
 enable=1
 # LC Pair 1 - Entry and Exit
-line-crossing-LC1-Entry=1304;758;1160;678;678;716;1446;617
-line-crossing-LC1-Exit=914;570;1008;615;617;670;1378;600
+line-crossing-LC1-Entry=1076;633;1004;664;972;667;1100;670
+line-crossing-LC1-Exit=877;722;945;691;962;677;1090;680
 # LC Pair 2 - Entry and Exit
-line-crossing-LC2-Entry=442;669;462;609;362;601;576;606
-line-crossing-LC2-Exit=474;534;473;566;377;579;572;581
-class-id=2
+line-crossing-LC2-Entry=1429;738;1462;698;1328;680;1469;686
+line-crossing-LC2-Exit=1520;640;1494;672;1338;670;1479;676
+class-id=0
 #extended when 0- only counts crossing on the configured Line
 #              1- assumes extended Line crossing counts all the crossing
 extended=1
@@ -98,7 +99,7 @@ extended=1
 #loose   : counts all crossing without strong adherence to direction
 #balanced: Strict direction adherence expected compared to mode=loose
 #strict  : Strict direction adherence expected compared to mode=balanced
-mode=loose
+mode=strict
 
 [direction-detection-stream-0]
 enable=0
