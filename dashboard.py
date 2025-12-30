@@ -6,14 +6,8 @@ import os
 from pathlib import Path
 from datetime import datetime, timedelta
 import numpy as np
-import threading
 import time
-
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
+import requests
 
 current_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
 sys.path.insert(0, str(current_dir))
@@ -26,26 +20,46 @@ except ImportError as e:
     DB_AVAILABLE = False
 
 try:
-    from config import (
-        RTSP_ENABLED, RTSP_URL, RTSP_RECONNECT_INTERVAL,
-        RTSP_FRAME_SKIP, RTSP_TIMEOUT, DB_PATH,
-        FRAME_SAVE_DIR, VIDEO_DISPLAY_WIDTH, VIDEO_DISPLAY_HEIGHT
-    )
+    from config import RTSP_ENABLED, DB_PATH, VIDEO_DISPLAY_WIDTH, VIDEO_DISPLAY_HEIGHT
+
     CONFIG_AVAILABLE = True
+    STREAM_SERVER_URL = getattr(
+        sys.modules["config"], "STREAM_SERVER_URL", "http://localhost:5000"
+    )
+    STREAM_SERVER_ENABLED = getattr(
+        sys.modules["config"], "STREAM_SERVER_ENABLED", True
+    )
 except ImportError:
     st.warning("config.py를 찾을 수 없음")
     CONFIG_AVAILABLE = False
     RTSP_ENABLED = False
-    RTSP_URL = "RTSP_address"
     DB_PATH = "deepstream_analytics.db"
-    FRAME_SAVE_DIR = "./deepstream_frames"
     VIDEO_DISPLAY_WIDTH = 800
     VIDEO_DISPLAY_HEIGHT = 450
+    STREAM_SERVER_URL = "http://localhost:5000"
+    STREAM_SERVER_ENABLED = True
 
 st.set_page_config(
     page_title="Roadview Dashboard",
     layout="wide",
     initial_sidebar_state="expanded"
+)
+
+# 일림 경고 오류때문에 추가함
+st.markdown(
+    """
+<style>
+.alert-danger {
+    animation: fadeSmooth 0.2s ease-in-out;
+}
+
+@keyframes fadeSmooth {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+</style>
+""",
+    unsafe_allow_html=True,
 )
 
 st.markdown("""
@@ -136,17 +150,6 @@ st.markdown("""
     .stApp {
         background-color: #f8f9fa;
     }
-    div[data-testid="stImage"] {
-        transition: none !important;
-        animation: none !important;
-    }
-    div[data-testid="stImage"] > img {
-        transition: none !important;
-        animation: none !important;
-    }
-    .element-container {
-        transition: none !important;
-    }
     .stat-card {
         background: white;
         padding: 20px;
@@ -202,157 +205,47 @@ st.markdown("""
         background: linear-gradient(90deg, #4ECDC4 0%, #44A08D 100%);
         transition: width 0.3s ease;
     }
+    .rtsp-container {
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        background: #000;
+        margin: 10px 0;
+    }
+    .rtsp-container img {
+        display: block;
+        width: 100%;
+        height: auto;
+        max-width: 100%;
+        object-fit: contain;
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# 스트리밍 서버 상태 확인
+def check_stream_server():
+    if not STREAM_SERVER_ENABLED:
+        return False, "스트리밍 서버가 비활성화되어 있습니다"
 
-#RTSP 스트림을 백그라운드에서 읽고 최신 프레임을 저장
-class RTSPStreamReader:
-    def __init__(self, rtsp_url, frame_skip=1, target_width=800, target_height=450):
-        self.rtsp_url = rtsp_url
-        self.frame_skip = frame_skip
-        self.target_width = target_width
-        self.target_height = target_height
-        self.current_frame = None
-        self.is_connected = False
-        self.is_running = False
-        self.frame_count = 0
-        self.cap = None
-        self.lock = threading.Lock()
-        self.thread = None
-        self.last_update = time.time()
-        self.connection_attempts = 0
-        self.max_connection_attempts = 5
+    try:
+        health_response = requests.get(f"{STREAM_SERVER_URL}/health", timeout=0.5)
+        if health_response.status_code == 200:
+            return True, "연결됨"
+    except:
+        pass
 
-    # RTSP 연결 시도
-    def connect(self):
-        
-        try:
-            if self.cap is not None:
-                self.cap.release()
-                time.sleep(0.3)
-            
-            self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-            
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
-            
-            if self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret and frame is not None:
-                    resized_frame = cv2.resize(frame, (self.target_width, self.target_height), 
-                                              interpolation=cv2.INTER_AREA)
-                    
-                    self.is_connected = True
-                    self.connection_attempts = 0
-                    with self.lock:
-                        self.current_frame = resized_frame.copy()
-                        self.last_update = time.time()
-                    print(f"RTSP 연결 성공: {self.rtsp_url}")
-                    return True
-            
-            self.is_connected = False
-            self.connection_attempts += 1
-            return False
-                
-        except Exception as e:
-            print(f"RTSP 연결 오류: {e}")
-            self.is_connected = False
-            self.connection_attempts += 1
-            return False
-     # 백그라운드 스레드에서 지속적으로 프레임 읽기
-    def _read_loop(self):
-        reconnect_interval = 5
-        last_reconnect = time.time()
-        frame_skip_counter = 0
-        
-        while self.is_running:
-            if not self.is_connected:
-                if self.connection_attempts >= self.max_connection_attempts:
-                    time.sleep(10)
-                    self.connection_attempts = 0
-                
-                if time.time() - last_reconnect > reconnect_interval:
-                    self.connect()
-                    last_reconnect = time.time()
-                time.sleep(1)
-                continue
-            
-            try:
-                if frame_skip_counter < self.frame_skip:
-                    self.cap.grab()
-                    frame_skip_counter += 1
-                    continue
-                
-                frame_skip_counter = 0
-                
-                buffer_size = int(self.cap.get(cv2.CAP_PROP_BUFFERSIZE))
-                for _ in range(buffer_size):
-                    self.cap.grab()
-                
-                ret, frame = self.cap.retrieve()
-                
-                if ret and frame is not None:
-                    resized_frame = cv2.resize(frame, (self.target_width, self.target_height),
-                                              interpolation=cv2.INTER_AREA)
-                    
-                    with self.lock:
-                        self.current_frame = resized_frame.copy()
-                        self.last_update = time.time()
-                    self.frame_count += 1
-                else:
-                    if time.time() - self.last_update > 10:
-                        self.is_connected = False
-                
-                time.sleep(0.02)
-                
-            except Exception as e:
-                print(f"프레임 읽기 오류: {e}")
-                self.is_connected = False
-                time.sleep(1)
-    # 백그라운드 스레드 시작
-    def start(self):
-        
-        if self.is_running:
-            return
-        
-        self.is_running = True
-        self.thread = threading.Thread(target=self._read_loop, daemon=True)
-        self.thread.start()
-        
-        max_init_attempts = 3
-        for attempt in range(max_init_attempts):
-            if self.connect():
-                break
-            if attempt < max_init_attempts - 1:
-                time.sleep(2)
-    
-    def get_current_frame(self):
-        """현재 프레임 반환"""
-        with self.lock:
-            if self.current_frame is not None:
-                return self.current_frame.copy(), self.last_update
-            return None, 0
+    try:
+        response = requests.get(f"{STREAM_SERVER_URL}/status", timeout=1)
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, dict):
+                return True, "연결됨"
+        return False, f"서버 응답 오류 ({response.status_code})"
+    except:
+        pass
 
-# 백그라운드 스레드 중지
-    def stop(self):
-        self.is_running = False
-        if self.thread is not None:
-            self.thread.join(timeout=3)
-        if self.cap is not None:
-            self.cap.release()
-        self.is_connected = False
-
-@st.cache_resource
-def get_rtsp_reader():
-    if not RTSP_ENABLED or not CV2_AVAILABLE:
-        return None
-    
-    reader = RTSPStreamReader(RTSP_URL, frame_skip=RTSP_FRAME_SKIP,
-                             target_width=VIDEO_DISPLAY_WIDTH,
-                             target_height=VIDEO_DISPLAY_HEIGHT)
-    reader.start()
-    return reader
+    return False, "서버에 연결할 수 없습니다"
 
 @st.cache_resource
 def init_database():
@@ -389,10 +282,10 @@ def check_deepstream_status(db):
             if time_diff > 30:
                 return False, f"마지막 데이터 수신: {int(time_diff)}초 전"
             else:
-                return True, "정상 작동 중"
+                return True, f"정상 작동 중 (최근: {int(time_diff)}초 전)"
                 
         except Exception as e:
-            return False, "데이터 형식 오류"
+            return False, f"타임스탬프 파싱 오류: {str(e)}"
             
     except Exception as e:
         return False, f"상태 확인 실패: {str(e)}"
@@ -408,15 +301,21 @@ def get_available_dates(db):
         max_str = stats['time_range'][1]
         
         try:
-            min_time = datetime.strptime(min_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+            if "." in min_str:
+                min_time = datetime.strptime(min_str.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+            else:
+                min_time = datetime.strptime(min_str, "%Y-%m-%dT%H:%M:%S")
         except:
-            min_time = datetime.strptime(min_str, '%Y-%m-%dT%H:%M:%S')
-        
+            min_time = datetime.strptime(min_str[:19], "%Y-%m-%dT%H:%M:%S")
+
         try:
-            max_time = datetime.strptime(max_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+            if "." in max_str:
+                max_time = datetime.strptime(max_str.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+            else:
+                max_time = datetime.strptime(max_str, "%Y-%m-%dT%H:%M:%S")
         except:
-            max_time = datetime.strptime(max_str, '%Y-%m-%dT%H:%M:%S')
-        
+            max_time = datetime.strptime(max_str[:19], "%Y-%m-%dT%H:%M:%S")
+
         dates = []
         current = min_time.date()
         end = max_time.date()
@@ -425,10 +324,13 @@ def get_available_dates(db):
             dates.append(current)
             current += timedelta(days=1)
         
+        dates.reverse()
         return dates
     except Exception as e:
+        print(f"날짜 조회 오류: {e}")
         return []
 
+# 최신 통계 데이터 조회
 def get_latest_stats(db):
     try:
         latest = db.get_latest(1)
@@ -448,122 +350,219 @@ def get_latest_stats(db):
                 'roi_person': row[11] or 0
             }
     except Exception as e:
-        pass
+        print(f"최신 통계 조회 오류: {e}")
     return None
 # 역주행 감지
 def check_wrong_direction(db):
     try:
-        latest_rows = db.get_latest(10)
-        if len(latest_rows) < 2:
+        latest = db.get_latest(1)  # 최신 1개만 조회
+        if not latest:
             return []
-        
+
+        row = latest[0]
+        timestamp = row[1]
+
+        lc1_exit = row[6] or 0
+        lc2_exit = row[8] or 0
+
+        # 세션 초기값 설정
+        if "prev_lc1_exit" not in st.session_state:
+            st.session_state.prev_lc1_exit = lc1_exit
+        if "prev_lc2_exit" not in st.session_state:
+            st.session_state.prev_lc2_exit = lc2_exit
+
         alerts = []
-        
-        for row in latest_rows:
-            lc1_exit = row[6] or 0
-            lc2_exit = row[8] or 0
-            timestamp = row[1]
-            
-            if lc1_exit > 0:
-                if not any(alert['timestamp'] == timestamp and alert['lane'] == 'LC1' for alert in alerts):
-                    alerts.append({
-                        'type': 'wrong_direction',
-                        'lane': 'LC1',
-                        'lane_name': '좌측 차로',
-                        'count': lc1_exit,
-                        'timestamp': timestamp
-                    })
-            
-            if lc2_exit > 0:
-                if not any(alert['timestamp'] == timestamp and alert['lane'] == 'LC2' for alert in alerts):
-                    alerts.append({
-                        'type': 'wrong_direction',
-                        'lane': 'LC2',
-                        'lane_name': '우측 차로',
-                        'count': lc2_exit,
-                        'timestamp': timestamp
-                    })
-        
+
+        # LC1 증가 감지
+        if lc1_exit > st.session_state.prev_lc1_exit:
+            increased = lc1_exit - st.session_state.prev_lc1_exit
+            alerts.append(
+                {
+                    "lane": "LC1",
+                    "lane_name": "좌측 차로",
+                    "count": increased,
+                    "timestamp": timestamp,
+                }
+            )
+
+        # LC2 증가 감지
+        if lc2_exit > st.session_state.prev_lc2_exit:
+            increased = lc2_exit - st.session_state.prev_lc2_exit
+            alerts.append(
+                {
+                    "lane": "LC2",
+                    "lane_name": "우측 차로",
+                    "count": increased,
+                    "timestamp": timestamp,
+                }
+            )
+
+        # 최신 값을 세션에 저장 (다음 비교 기준)
+        st.session_state.prev_lc1_exit = lc1_exit
+        st.session_state.prev_lc2_exit = lc2_exit
+
         return alerts[:5]
     except Exception as e:
+        print(f"역주행 체크 오류: {e}")
         return []
 
-def get_hourly_roi_data(db, date_str):
+# 시간대별 데이터 조회
+def get_hourly_data(db, date_str, target_filter="전체"):
     try:
+        # 날짜 범위 설정
         if date_str == "current":
             now = datetime.now()
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_str = today_start.strftime('%Y-%m-%dT%H:%M:%S')
-            end_str = now.strftime('%Y-%m-%dT%H:%M:%S')
+            start_str = today_start.strftime("%Y-%m-%dT%H:%M:%S")
+            end_str = now.strftime("%Y-%m-%dT%H:%M:%S")
         else:
-            start_str = f"{date_str} 00:00:00"
-            end_str = f"{date_str} 23:59:59"
-        
+            start_str = f"{date_str}T00:00:00"
+            end_str = f"{date_str}T23:59:59"
+
+        print(f"쿼리 범위: {start_str} ~ {end_str}")
+
         rows = db.get_time_range(start_str, end_str)
-        
-        if not rows:
+
+        if not rows or len(rows) == 0:
+            print(f"데이터 없음: {date_str}")
             return None
-        
-        hourly_dict = {}
+
+        print(f"조회된 데이터 수: {len(rows)}")
+
+        # 시간대별 데이터 수집
+        hourly_data = {}
+
         for row in rows:
             timestamp_str = row[1]
+
             try:
-                if '.' in timestamp_str:
-                    dt = datetime.strptime(timestamp_str.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                if "." in timestamp_str:
+                    dt = datetime.strptime(
+                        timestamp_str.split(".")[0], "%Y-%m-%dT%H:%M:%S"
+                    )
                 else:
-                    dt = datetime.strptime(timestamp_str, '%Y-%m-%dT%H:%M:%S')
-                
-                from datetime import timezone, timedelta
-                dt = dt.replace(tzinfo=timezone.utc)
-                dt_kst = dt.astimezone(timezone(timedelta(hours=9)))
-                
-                hour = dt_kst.hour
-                
+                    dt = datetime.strptime(
+                        timestamp_str.split(".")[0], "%Y-%m-%dT%H:%M:%S"
+                    )
+                    dt = dt + timedelta(hours=9)
+
+                hour = dt.hour
+
+                if hour not in hourly_data:
+                    hourly_data[hour] = {
+                        "first_car": row[9] or 0,
+                        "last_car": row[9] or 0,
+                        "first_bicycle": row[10] or 0,
+                        "last_bicycle": row[10] or 0,
+                        "first_person": row[11] or 0,
+                        "last_person": row[11] or 0,
+                    }
+                else:
+                    hourly_data[hour]["last_car"] = row[9] or 0
+                    hourly_data[hour]["last_bicycle"] = row[10] or 0
+                    hourly_data[hour]["last_person"] = row[11] or 0
+
             except Exception as e:
+                print(f"Timestamp 파싱 오류: {timestamp_str}, {e}")
                 continue
-            
-            if hour not in hourly_dict:
-                hourly_dict[hour] = {
-                    'roi_car': [],
-                    'roi_bicycle': [],
-                    'roi_person': []
-                }
-            
-            hourly_dict[hour]['roi_car'].append(row[9] or 0)
-            hourly_dict[hour]['roi_bicycle'].append(row[10] or 0)
-            hourly_dict[hour]['roi_person'].append(row[11] or 0)
-        
+
+        # 0~23시 데이터 생성
         hours = list(range(24))
         car_data = []
         bicycle_data = []
         person_data = []
-        
+
         for hour in hours:
-            if hour in hourly_dict:
-                car_data.append(max(hourly_dict[hour]['roi_car']))
-                bicycle_data.append(max(hourly_dict[hour]['roi_bicycle']))
-                person_data.append(max(hourly_dict[hour]['roi_person']))
+            if hour in hourly_data:
+                car_increase = max(
+                    0, hourly_data[hour]["last_car"] - hourly_data[hour]["first_car"]
+                )
+                bicycle_increase = max(
+                    0,
+                    hourly_data[hour]["last_bicycle"]
+                    - hourly_data[hour]["first_bicycle"],
+                )
+                person_increase = max(
+                    0,
+                    hourly_data[hour]["last_person"]
+                    - hourly_data[hour]["first_person"],
+                )
+
+                car_data.append(car_increase)
+                bicycle_data.append(bicycle_increase)
+                person_data.append(person_increase)
             else:
                 car_data.append(0)
                 bicycle_data.append(0)
                 person_data.append(0)
-        
+
+        # 필터링 적용
+        if target_filter == "차량":
+            bicycle_data = [0] * 24
+            person_data = [0] * 24
+        elif target_filter == "자전거":
+            car_data = [0] * 24
+            person_data = [0] * 24
+        elif target_filter == "사람":
+            car_data = [0] * 24
+            bicycle_data = [0] * 24
+
         return hours, car_data, bicycle_data, person_data
         
     except Exception as e:
+        print(f"시간대별 데이터 조회 오류: {e}")
+        import traceback
+
+        traceback.print_exc()
         return None
 
-# 세션 상태 초기화
-if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = time.time()
-if 'auto_refresh_enabled' not in st.session_state:
-    st.session_state.auto_refresh_enabled = True
+# DeepStream 재시작과 무관하게 하루 전체 누적 traffic 계산
+def get_daily_lane_totals(db, date_str):
+    if date_str == "current":
+        today = datetime.now().strftime("%Y-%m-%d")
+    else:
+        today = date_str
+
+    start = f"{today}T00:00:00"
+    end = f"{today}T23:59:59"
+
+    rows = db.get_time_range(start, end)
+    if not rows:
+        return 0, 0
+
+    prev_lc1 = None
+    prev_lc2 = None
+    total_lc1 = 0
+    total_lc2 = 0
+
+    for r in rows:
+        lc1 = r[5] or 0
+        lc2 = r[7] or 0
+
+        if prev_lc1 is not None:
+            # 증가한 경우만 합산 (감소는 DeepStream 재시작으로 판단)
+            if lc1 > prev_lc1:
+                total_lc1 += lc1 - prev_lc1
+
+        if prev_lc2 is not None:
+            if lc2 > prev_lc2:
+                total_lc2 += lc2 - prev_lc2
+
+        # 이전 값 갱신
+        prev_lc1 = lc1
+        prev_lc2 = lc2
+
+    return total_lc1, total_lc2
+
 
 # 데이터베이스 초기화
 db, error = init_database()
 
 # DeepStream 상태 확인
 deepstream_running, deepstream_msg = check_deepstream_status(db)
+
+# 스트리밍 서버 상태 확인
+stream_connected, stream_msg = check_stream_server()
 
 # 사이드바 구성
 with st.sidebar:
@@ -581,13 +580,17 @@ with st.sidebar:
         available_dates = get_available_dates(db)
         
         if available_dates:
-            period_options = ["현재"] + [d.strftime('%Y.%m.%d') for d in available_dates]
-            period_mode = st.selectbox("기간", period_options, index=0, label_visibility="collapsed")
-            
+            period_options = ["현재"] + [
+                d.strftime("%Y-%m-%d") for d in available_dates
+            ]
+            period_mode = st.selectbox(
+                "기간", period_options, index=0, label_visibility="collapsed"
+            )
+
             if period_mode == "현재":
                 selected_date = "current"
             else:
-                selected_date = datetime.strptime(period_mode, '%Y.%m.%d').strftime('%Y-%m-%d')
+                selected_date = period_mode
         else:
             st.info("저장된 데이터가 없음")
             period_mode = "현재"
@@ -604,58 +607,58 @@ with st.sidebar:
     alert_container = st.container()
     
     with alert_container:
+        alerts = []  # 모든 경고를 리스트에 쌓는다
+
+        # DeepStream 경고
         if not deepstream_running:
-            st.markdown(f"""
+            alerts.append(
+                f"""
             <div class="alert-danger">
-                <strong>DeepStream 미실행</strong><br/>
+                <strong>!! DeepStream 상태</strong><br/>
                 {deepstream_msg}<br/>
                 DeepStream과 mqtt_receiver.py를 실행하세요.
             </div>
-            """, unsafe_allow_html=True)
+            """
+            )
+
+        # 스트리밍 서버 경고
+        if not stream_connected and STREAM_SERVER_ENABLED:
+            alerts.append(
+                f"""
+            <div class="alert-warning">
+                <strong>!! 스트리밍 서버 연결 실패</strong><br/>
+                {stream_msg}<br/>
+                rtsp_stream_server.py가 실행 중인지 확인하세요.
+            </div>
+            """
+            )
         
+        # 역주행 경고
         if db:
             wrong_direction_alerts = check_wrong_direction(db)
-            
-            if wrong_direction_alerts:
-                for alert in wrong_direction_alerts:
-                    try:
-                        dt = datetime.strptime(alert['timestamp'].split('.')[0], '%Y-%m-%dT%H:%M:%S')
-                        formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                    except:
-                        formatted_time = alert['timestamp']
-                    
-                    st.markdown(f"""
-                    <div class="alert-danger">
-                        <strong>역주행 감지</strong><br/>
-                        <strong>차로:</strong> {alert['lane']} ({alert['lane_name']})<br/>
-                        <strong>감지 횟수:</strong> {alert['count']}회<br/>
-                        <strong>감지 시각:</strong> {formatted_time}
-                    </div>
-                    """, unsafe_allow_html=True)
-            elif deepstream_running:
-                st.markdown("""
-                <div class="alert-info">
-                    <strong>정상:</strong> 시스템이 정상 작동 중입니다.
+            for alert in wrong_direction_alerts:
+                try:
+                    dt = datetime.strptime(
+                        alert["timestamp"].split(".")[0], "%Y-%m-%dT%H:%M:%S"
+                    )
+                    formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    formatted_time = alert["timestamp"]
+
+                alerts.append(
+                    f"""
+                <div class="alert-danger">
+                    <strong>!! 역주행 감지</strong><br/>
+                    <strong>차로:</strong> {alert['lane']} ({alert['lane_name']})<br/>
+                    <strong>감지 횟수:</strong> {alert['count']}회<br/>
+                    <strong>감지 시각:</strong> {formatted_time}
                 </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="alert-warning">
-                <strong>경고:</strong> DB 연결 안됨
-            </div>
-            """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    auto_refresh = st.checkbox("자동 새로고침", value=st.session_state.auto_refresh_enabled)
-    st.session_state.auto_refresh_enabled = auto_refresh
-    
-    if auto_refresh:
-        refresh_interval = st.slider("새로고침 간격 (초)", 0.5, 5.0, 1.0, 0.5)
-    
-    if st.button("지금 새로고침", use_container_width=True):
-        st.session_state.last_refresh = time.time()
-        st.rerun()
+                """
+                )
+
+        # 리스트에 쌓인 alerts를 한 번에 출력
+        for alert_html in alerts:
+            st.markdown(alert_html, unsafe_allow_html=True)
 
 # 최신 통계 조회
 if db:
@@ -686,63 +689,63 @@ if not stats:
 col_video, col_stats = st.columns([2, 1])
 
 with col_video:
-    # RTSP 상태 배지
-    if RTSP_ENABLED and CV2_AVAILABLE:
-        reader = get_rtsp_reader()
-        if reader and reader.is_connected:
-            rtsp_status = '<span class="rtsp-badge rtsp-badge-connected">RTSP 연결됨</span>'
-        else:
-            rtsp_status = '<span class="rtsp-badge rtsp-badge-disconnected">RTSP 연결 안됨</span>'
+    if stream_connected:
+        stream_status = (
+            '<span class="rtsp-badge rtsp-badge-connected">스트림 연결됨</span>'
+        )
     else:
-        rtsp_status = '<span class="rtsp-badge rtsp-badge-disconnected">RTSP 비활성화</span>'
-    
-    st.markdown(f'<div class="section-header"><span>실시간 영상</span>{rtsp_status}</div>', 
-                unsafe_allow_html=True)
-    
-    # 영상을 위한 컨테이너
-    video_placeholder = st.empty()
-    
-    if RTSP_ENABLED and CV2_AVAILABLE:
-        reader = get_rtsp_reader()
-        
-        if reader:
-            frame, frame_time = reader.get_current_frame()
-            
-            if frame is not None:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                timestamp_str = datetime.fromtimestamp(frame_time).strftime('%Y년 %m월 %d일 %H:%M:%S')
-                
-                # placeholder를 사용하여 이미지 업데이트
-                video_placeholder.image(
-                    frame_rgb,
-                    use_container_width=True,
-                    caption=f"RTSP 실시간 스트림 - {timestamp_str}"
-                )
-            else:
-                if reader.is_connected:
-                    video_placeholder.info("프레임 로딩 중...")
-                else:
-                    video_placeholder.error("RTSP 연결 실패")
-                    video_placeholder.info("재연결 시도 중...")
-        else:
-            video_placeholder.error("RTSP 리더 초기화 실패")
+        stream_status = '<span class="rtsp-badge rtsp-badge-disconnected">스트림 연결 안됨</span>'
+
+    st.markdown(
+        f'<div class="section-header"><span>실시간 영상</span>{stream_status}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if stream_connected and STREAM_SERVER_ENABLED:
+        stream_url = f"{STREAM_SERVER_URL}/stream/main"
+
+        st.markdown(
+            f"""
+        <div class="rtsp-container">
+            <img src="{stream_url}" 
+                 style="width: 100%; height: auto; display: block; max-width: 100%;"
+                 alt="RTSP Live Stream" />
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+        # 현재 시각 표시
+        current_time = datetime.now().strftime("%Y년 %m월 %d일 %H:%M:%S")
+        st.caption(f"실시간 스트리밍 | {current_time}")
     else:
-        video_placeholder.image("https://via.placeholder.com/800x450/2C3E50/FFFFFF?text=No+Video+Feed", 
-                use_container_width=True)
-        st.info("RTSP를 사용하려면 config.py에서 RTSP_ENABLED = True 설정")
+        st.image(
+            "https://via.placeholder.com/800x450/2C3E50/FFFFFF?text=No+Video+Feed",
+            use_column_width=True,
+        )
+        st.info("스트리밍 서버를 시작하려면: `python3 rtsp_stream_server.py`")
 
 with col_stats:
-    st.markdown('<div class="section-header">물체 분포 비율</div>', unsafe_allow_html=True)
-    
-    total = stats['car_total'] + stats['bicycle_total'] + stats['person_total']
-    
-    if total > 0:
-        car_pct = round(stats['car_total'] / total * 100, 1)
-        bicycle_pct = round(stats['bicycle_total'] / total * 100, 1)
-        person_pct = round(stats['person_total'] / total * 100, 1)
-        values = [person_pct, car_pct, bicycle_pct]
-    else:
-        values = [0, 0, 0]
+    st.markdown(
+        '<div class="section-header">현재 물체 분포 비율</div>', unsafe_allow_html=True
+    )
+
+    # 필터링 적용된 통계
+    if target_filter == "전체":
+        total = stats["car_total"] + stats["bicycle_total"] + stats["person_total"]
+        if total > 0:
+            car_pct = round(stats["car_total"] / total * 100, 1)
+            bicycle_pct = round(stats["bicycle_total"] / total * 100, 1)
+            person_pct = round(stats["person_total"] / total * 100, 1)
+            values = [person_pct, car_pct, bicycle_pct]
+        else:
+            values = [0, 0, 0]
+    elif target_filter == "차량":
+        values = [0, 100, 0]
+    elif target_filter == "자전거":
+        values = [0, 0, 100]
+    elif target_filter == "사람":
+        values = [100, 0, 0]
     
     labels = ['사람', '차량', '자전거']
     colors = ['#FFA726', '#42A5F5', '#66BB6A']
@@ -774,10 +777,9 @@ with col_stats:
         st.markdown(f'<div style="text-align:center"><span style="color:#66BB6A;font-size:2rem;font-weight:bold">{values[2]}%</span><br>자전거</div>', unsafe_allow_html=True)
     
     st.markdown('<div class="section-header">차로별 차량 통행량</div>', unsafe_allow_html=True)
-    
-    left_count = stats['lc1_entry']
-    right_count = stats['lc2_entry']
-    
+
+    left_count, right_count = get_daily_lane_totals(db, selected_date)
+
     col_left, col_right = st.columns(2)
     
     with col_left:
@@ -796,11 +798,11 @@ with col_stats:
         </div>
         """, unsafe_allow_html=True)
 
-st.markdown('<div class="section-header">관제 대상 시간대별 트래픽 (ROI 누적)</div>', 
+st.markdown('<div class="section-header">관제 대상 시간대별 트래픽</div>', 
             unsafe_allow_html=True)
 
 if db:
-    hourly_result = get_hourly_roi_data(db, selected_date)
+    hourly_result = get_hourly_data(db, selected_date, target_filter)
 
     if hourly_result:
         hours, car_data, bicycle_data, person_data = hourly_result
@@ -808,38 +810,48 @@ if db:
         hour_labels = [f"{h:02d}시" for h in hours]
         
         fig_traffic = go.Figure()
-        
-        fig_traffic.add_trace(go.Scatter(
-            x=hour_labels,
-            y=car_data,
-            mode='lines+markers',
-            name='차량',
-            line=dict(color='#42A5F5', width=3),
-            marker=dict(size=6)
-        ))
-        
-        fig_traffic.add_trace(go.Scatter(
-            x=hour_labels,
-            y=bicycle_data,
-            mode='lines+markers',
-            name='자전거',
-            line=dict(color='#66BB6A', width=3),
-            marker=dict(size=6)
-        ))
-        
-        fig_traffic.add_trace(go.Scatter(
-            x=hour_labels,
-            y=person_data,
-            mode='lines+markers',
-            name='사람',
-            line=dict(color='#FFA726', width=3),
-            marker=dict(size=6)
-        ))
-        
+
+        # 필터링에 따라 그래프 표시
+        if target_filter in ["전체", "차량"]:
+            fig_traffic.add_trace(
+                go.Scatter(
+                    x=hour_labels,
+                    y=car_data,
+                    mode="lines+markers",
+                    name="차량",
+                    line=dict(color="#42A5F5", width=3),
+                    marker=dict(size=6),
+                )
+            )
+
+        if target_filter in ["전체", "자전거"]:
+            fig_traffic.add_trace(
+                go.Scatter(
+                    x=hour_labels,
+                    y=bicycle_data,
+                    mode="lines+markers",
+                    name="자전거",
+                    line=dict(color="#66BB6A", width=3),
+                    marker=dict(size=6),
+                )
+            )
+
+        if target_filter in ["전체", "사람"]:
+            fig_traffic.add_trace(
+                go.Scatter(
+                    x=hour_labels,
+                    y=person_data,
+                    mode="lines+markers",
+                    name="사람",
+                    line=dict(color="#FFA726", width=3),
+                    marker=dict(size=6),
+                )
+            )
+
         fig_traffic.update_layout(
             height=350,
             xaxis_title="시간",
-            yaxis_title="누적 카운트",
+            yaxis_title="시간당 카운트",
             hovermode='x unified',
             legend=dict(
                 orientation="h",
@@ -855,10 +867,16 @@ if db:
         )
         
         st.plotly_chart(fig_traffic, use_container_width=True)
+
+        if selected_date != "current":
+            st.info(f"선택된 날짜: {selected_date}")
+        else:
+            current_time = datetime.now().strftime("%Y년 %m월 %d일 %H:%M:%S")
+            st.info(f"현재 시각: {current_time} (실시간 데이터)")
     else:
-        st.info("선택한 날짜의 데이터가 없습니다.")
+        st.warning(f"!! 선택한 날짜({selected_date})의 데이터가 없음")
 else:
-    st.warning("데이터베이스 연결이 필요합니다.")
+    st.warning("데이터베이스 연결 팔요")
 
 # 주요 통계
 st.markdown('<div class="section-header">주요 통계 요약</div>', unsafe_allow_html=True)
@@ -872,7 +890,7 @@ total_violations = stats['lc1_exit'] + stats['lc2_exit']
 with col1:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-card-header">총 차량 통행량</div>
+        <div class="stat-card-header">탈것 통행량</div>
         <div class="stat-card-value">{total_traffic:,}</div>
         <div class="stat-card-label">LC1: {left_count:,} | LC2: {right_count:,}</div>
     </div>
@@ -881,7 +899,7 @@ with col1:
 with col2:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-card-header">총 감지 물체</div>
+        <div class="stat-card-header">감지한 물체</div>
         <div class="stat-card-value">{total_objects:,}</div>
         <div class="stat-card-label">차량·자전거·사람 합계</div>
     </div>
@@ -900,7 +918,7 @@ with col3:
 with col4:
     st.markdown(f"""
     <div class="stat-card">
-        <div class="stat-card-header">누적 레코드</div>
+        <div class="stat-card-header">누적 데이터</div>
         <div class="stat-card-value">{info['count']:,}</div>
         <div class="stat-card-label">전체 데이터베이스</div>
     </div>
@@ -921,7 +939,7 @@ with tab1:
         
         st.markdown(f"""
         <div class="metric-row">
-            <span class="metric-label">정상 진입</span>
+            <span class="metric-label">정상 주행</span>
             <span class="metric-value" style="color: #28a745">{stats['lc1_entry']:,}</span>
         </div>
         <div class="metric-row">
@@ -929,7 +947,7 @@ with tab1:
             <span class="metric-value" style="color: #dc3545">{stats['lc1_exit']:,}</span>
         </div>
         <div class="metric-row">
-            <span class="metric-label">총 이벤트</span>
+            <span class="metric-label">이벤트 발생</span>
             <span class="metric-value">{lc1_total:,}</span>
         </div>
         """, unsafe_allow_html=True)
@@ -945,7 +963,7 @@ with tab1:
         
         st.markdown(f"""
         <div class="metric-row">
-            <span class="metric-label">정상 진입</span>
+            <span class="metric-label">정상 주행</span>
             <span class="metric-value" style="color: #28a745">{stats['lc2_entry']:,}</span>
         </div>
         <div class="metric-row">
@@ -953,7 +971,7 @@ with tab1:
             <span class="metric-value" style="color: #dc3545">{stats['lc2_exit']:,}</span>
         </div>
         <div class="metric-row">
-            <span class="metric-label">총 이벤트</span>
+            <span class="metric-label">이벤트 발생</span>
             <span class="metric-value">{lc2_total:,}</span>
         </div>
         """, unsafe_allow_html=True)
@@ -1029,7 +1047,6 @@ with tab3:
     </div>
     """, unsafe_allow_html=True)
 
-# 자동 새로고침 로직
-if auto_refresh:
-    time.sleep(refresh_interval)
-    st.rerun()
+# 자동 새로고침
+time.sleep(1)
+st.rerun()

@@ -20,6 +20,14 @@ RTSP_TIMEOUT = 10  # 연결 타임아웃 초
 RTSP_BUFFER_SIZE = 1  # 버퍼 크기, 1이 가장 낮은 지연
 RTSP_MAX_RECONNECT_ATTEMPTS = 5  # 최대 재연결 시도 횟수
 
+# 스트리밍 서버 설정
+STREAM_SERVER_ENABLED = True
+STREAM_SERVER_HOST = "0.0.0.0"
+STREAM_SERVER_PORT = 5000  # 서버 포트
+STREAM_SERVER_URL = "http://localhost:5000"  # 대시보드에서 접근할 URL
+STREAM_FPS = 20  # 스트림 FPS 
+STREAM_QUALITY = 50  # JPEG 품질
+
 # MQTT 브로커 설정
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
@@ -29,11 +37,5 @@ MQTT_TOPIC = "deepstream/count"
 DB_PATH = "deepstream_analytics.db"
 
 # 대시보드 설정
-DASHBOARD_REFRESH_INTERVAL = 1.0  # 대시보드 새로고침 간격 초
 VIDEO_DISPLAY_WIDTH = 800  # 영상 표시 너비
 VIDEO_DISPLAY_HEIGHT = 450  # 영상 표시 높이
-
-# 프레임 저장 설정
-SAVE_FRAMES = False
-FRAME_SAVE_DIR = "./deepstream_frames"
-FRAME_SAVE_INTERVAL = 30  # 몇 프레임마다 저장할지
